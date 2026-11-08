@@ -1,5 +1,7 @@
 # GPL Smooth Pedals
 
+[🇬🇧 Read in English / 🇬🇧 Английская версия](README_EN.md)
+
 Приложение для плавного управления педалями и рулём в Grand Prix Legends с клавиатуры.
 
 ## Требования
