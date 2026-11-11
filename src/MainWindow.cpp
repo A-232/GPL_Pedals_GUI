@@ -1,35 +1,26 @@
 #include "MainWindow.h"
 
-// 1. ВАЖНО: Определяем NOMINMAX, чтобы windows.h не конфликтовал со std::min и std::max из <algorithm>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 
-// 2. Подключаем Qt
 #include <QApplication>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QMessageBox>
 #include <QCloseEvent>
+#include <QKeySequence>
 
-// 3. ВАЖНО: Подключаем заголовки vJoy ПОСЛЕ windows.h и внутри extern "C"
 extern "C" {
 #include "public.h"
 #include "vjoyinterface.h"
 }
 
-
-// Клавиши
-const int KEY_GAS    = VK_MULTIPLY;   // Numpad *
-const int KEY_BRAKE  = VK_F5;         // F5
-const int KEY_LEFT   = VK_DIVIDE;     // Numpad /
-const int KEY_RIGHT  = VK_SUBTRACT;   // Numpad -
-
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
-    setWindowTitle("GPL Smooth Pedals");
-    setMinimumSize(400, 500);
+    setWindowTitle("GPL Smooth Pedals v1.1");
+    setMinimumSize(450, 600);
 
     vJoyInitialized = false;
     vJoyId = 1;
@@ -37,91 +28,180 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     brake = 0.0f;
     steer = 0.0f;
 
+    // Значения по умолчанию (Виртуальные коды Windows)
+    keyGas = VK_MULTIPLY;
+    keyBrake = VK_F5;
+    keyLeft = VK_DIVIDE;
+    keyRight = VK_SUBTRACT;
+    waitingForKey = "";
+
     setupUI();
     setupTrayIcon();
-    loadSettings();
+    loadStartupSettings(); // Загружаем настройки при старте
+    updateKeyLabels();     // Обновляем текст кнопок клавиш
     initVJoy();
 
-    // Таймер обновления vJoy (10 мс = 100 раз/сек)
     updateTimer = new QTimer(this);
     connect(updateTimer, &QTimer::timeout, this, &MainWindow::updateVJoy);
-    updateTimer->start(10);
+    updateTimer->start(10); // 10 мс = 100 обновлений в секунду
 }
 
 MainWindow::~MainWindow() {
     cleanupVJoy();
 }
 
+// === ПЕРЕХВАТ КЛАВИШ ДЛЯ ПЕРЕНАЗНАЧЕНИЯ ===
+void MainWindow::keyPressEvent(QKeyEvent *event) {
+    if (!waitingForKey.isEmpty()) {
+        int vkCode = event->nativeVirtualKey();
+
+        if (vkCode != 0) {
+            if (waitingForKey == "Gas") {
+                keyGas = vkCode;
+            } else if (waitingForKey == "Brake") {
+                keyBrake = vkCode;
+            } else if (waitingForKey == "Left") {
+                keyLeft = vkCode;
+            } else if (waitingForKey == "Right") {
+                keyRight = vkCode;
+            }
+
+            waitingForKey = "";
+            updateKeyLabels();
+
+            // Вызываем saveProfile для сохранения настроек
+            saveProfile(profileCombo->currentText());
+
+            QMessageBox::information(this, "Успех", "Клавиша успешно изменена и сохранена!");
+        }
+        event->accept();
+        return;
+    }
+
+    QMainWindow::keyPressEvent(event);
+}
+
+void MainWindow::updateKeyLabels() {
+    btnSetGas->setText(QKeySequence(keyGas).toString());
+    btnSetBrake->setText(QKeySequence(keyBrake).toString());
+    btnSetLeft->setText(QKeySequence(keyLeft).toString());
+    btnSetRight->setText(QKeySequence(keyRight).toString());
+}
+
+void MainWindow::onSetGasKeyClicked() { waitingForKey = "Gas"; btnSetGas->setText("Нажмите клавишу..."); }
+void MainWindow::onSetBrakeKeyClicked() { waitingForKey = "Brake"; btnSetBrake->setText("Нажмите клавишу..."); }
+void MainWindow::onSetLeftKeyClicked() { waitingForKey = "Left"; btnSetLeft->setText("Нажмите клавишу..."); }
+void MainWindow::onSetRightKeyClicked() { waitingForKey = "Right"; btnSetRight->setText("Нажмите клавишу..."); }
+
+// === НАСТРОЙКА ИНТЕРФЕЙСА ===
 void MainWindow::setupUI() {
     QWidget *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
-
     QVBoxLayout *mainLayout = new QVBoxLayout(centralWidget);
 
-    // Группа настроек газа
-    QGroupBox *throttleGroup = new QGroupBox("Газ/Throttle (Клавиша/Key 'Numpad *')");
+    // --- ГАЗ ---
+    QGroupBox *throttleGroup = new QGroupBox("Газ /Throttle");
     QVBoxLayout *throttleLayout = new QVBoxLayout(throttleGroup);
+
+    QHBoxLayout *gasKeyLayout = new QHBoxLayout();
+    gasKeyLayout->addWidget(new QLabel("Клавиша /Key:"));
+    btnSetGas = new QPushButton();
+    btnSetGas->setMaximumWidth(120);
+    connect(btnSetGas, &QPushButton::clicked, this, &MainWindow::onSetGasKeyClicked);
+    gasKeyLayout->addWidget(btnSetGas);
+    throttleLayout->addLayout(gasKeyLayout);
+
     throttleSlider = new QSlider(Qt::Horizontal);
-    throttleSlider->setRange(1, 50);    // Изначально было throttleSlider->setRange(1, 20);
-    throttleSlider->setValue(30);    // Изначально было throttleSlider->setValue(3);
-    throttleValue = new QLabel("Скорость: 0.03");
+    throttleSlider->setRange(10, 200);
+    throttleSlider->setValue(30);
+    throttleValue = new QLabel("Время разгона /Acceleration Time: 30 мс");
     throttleLayout->addWidget(throttleSlider);
     throttleLayout->addWidget(throttleValue);
     connect(throttleSlider, &QSlider::valueChanged, this, &MainWindow::onThrottleChanged);
     mainLayout->addWidget(throttleGroup);
 
-    // Группа настроек тормоза
-    QGroupBox *brakeGroup = new QGroupBox("Тормоз/Brake (Клавиша/Key 'F5')");
+    // --- ТОРМОЗ ---
+    QGroupBox *brakeGroup = new QGroupBox("Тормоз /Brake");
     QVBoxLayout *brakeLayout = new QVBoxLayout(brakeGroup);
+
+    QHBoxLayout *brakeKeyLayout = new QHBoxLayout();
+    brakeKeyLayout->addWidget(new QLabel("Клавиша /Key:"));
+    btnSetBrake = new QPushButton();
+    btnSetBrake->setMaximumWidth(120);
+    connect(btnSetBrake, &QPushButton::clicked, this, &MainWindow::onSetBrakeKeyClicked);
+    brakeKeyLayout->addWidget(btnSetBrake);
+    brakeLayout->addLayout(brakeKeyLayout);
+
     brakeSlider = new QSlider(Qt::Horizontal);
-    brakeSlider->setRange(1, 20);
-    brakeSlider->setValue(5);
-    brakeValue = new QLabel("Скорость: 0.05");
+    brakeSlider->setRange(10, 200);
+    brakeSlider->setValue(40);
+    brakeValue = new QLabel("Время торможения /Braking Time: 40 мс");
     brakeLayout->addWidget(brakeSlider);
     brakeLayout->addWidget(brakeValue);
     connect(brakeSlider, &QSlider::valueChanged, this, &MainWindow::onBrakeChanged);
     mainLayout->addWidget(brakeGroup);
 
-    // Группа настроек руля
-    QGroupBox *steerGroup = new QGroupBox("Руль/Steering wheel (Клавиша/Key 'Numpad /' и 'Numpad -')");
+    // --- РУЛЬ ---
+    QGroupBox *steerGroup = new QGroupBox("Руль /Steering");
     QVBoxLayout *steerLayout = new QVBoxLayout(steerGroup);
+
+    QHBoxLayout *steerKeyLayout = new QHBoxLayout();
+    steerKeyLayout->addWidget(new QLabel("Влево /Left:"));
+    btnSetLeft = new QPushButton();
+    btnSetLeft->setMaximumWidth(120);
+    connect(btnSetLeft, &QPushButton::clicked, this, &MainWindow::onSetLeftKeyClicked);
+    steerKeyLayout->addWidget(btnSetLeft);
+
+    steerKeyLayout->addWidget(new QLabel("Вправо /Right:"));
+    btnSetRight = new QPushButton();
+    btnSetRight->setMaximumWidth(120);
+    connect(btnSetRight, &QPushButton::clicked, this, &MainWindow::onSetRightKeyClicked);
+    steerKeyLayout->addWidget(btnSetRight);
+    steerLayout->addLayout(steerKeyLayout);
+
     steerSlider = new QSlider(Qt::Horizontal);
-    steerSlider->setRange(1, 20);
-    steerSlider->setValue(8);
-    steerValue = new QLabel("Скорость: 0.08");
+    steerSlider->setRange(10, 200);
+    steerSlider->setValue(60);
+    steerValue = new QLabel("Время поворота /Steering Turn Time: 60 мс");
+
     steerReturnSlider = new QSlider(Qt::Horizontal);
-    steerReturnSlider->setRange(1, 20);
-    steerReturnSlider->setValue(10);
-    steerReturnValue = new QLabel("Возврат: 0.10");
-    steerLayout->addWidget(new QLabel("Поворот/Turn:"));
+    steerReturnSlider->setRange(10, 200);
+    steerReturnSlider->setValue(40);
+    steerReturnValue = new QLabel("Время возврата /Steering Return Time: 40 мс");
+
+    steerLayout->addWidget(new QLabel("Поворот /Turn:"));
     steerLayout->addWidget(steerSlider);
     steerLayout->addWidget(steerValue);
-    steerLayout->addWidget(new QLabel("Возврат в центр/Center return:"));
+    steerLayout->addWidget(new QLabel("Возврат в центр /Center return:"));
     steerLayout->addWidget(steerReturnSlider);
     steerLayout->addWidget(steerReturnValue);
+
     connect(steerSlider, &QSlider::valueChanged, this, &MainWindow::onSteerChanged);
     connect(steerReturnSlider, &QSlider::valueChanged, this, &MainWindow::onSteerReturnChanged);
     mainLayout->addWidget(steerGroup);
 
-    // Группа профилей
-    QGroupBox *profileGroup = new QGroupBox("Профили");
+    // --- ПРОФИЛИ ---
+    QGroupBox *profileGroup = new QGroupBox("Профили / Profiles");
     QVBoxLayout *profileLayout = new QVBoxLayout(profileGroup);
     profileCombo = new QComboBox();
-    profileCombo->addItems({"Default", "Monza", "Monaco", "Spa", "Custom"});
+    profileCombo->addItems({"Default", "Monza", "Monaco", "Spa", "Watkins Glen", "Custom"});
+
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    saveButton = new QPushButton("Сохранить/Save");
-    loadButton = new QPushButton("Загрузить/Download");
+    saveButton = new QPushButton("Сохранить / Save");
+    loadButton = new QPushButton("Загрузить / Load");
     buttonLayout->addWidget(saveButton);
     buttonLayout->addWidget(loadButton);
+
     profileLayout->addWidget(profileCombo);
     profileLayout->addLayout(buttonLayout);
+
     connect(saveButton, &QPushButton::clicked, this, &MainWindow::onSaveProfileClicked);
     connect(loadButton, &QPushButton::clicked, this, &MainWindow::onLoadProfileClicked);
     connect(profileCombo, &QComboBox::currentTextChanged, this, &MainWindow::onProfileChanged);
     mainLayout->addWidget(profileGroup);
 
-    // Кнопка применения
-    applyButton = new QPushButton("Применить настройки/Apply the settings");
+    // --- ПРИМЕНИТЬ ---
+    applyButton = new QPushButton("Применить настройки / Apply Settings");
     applyButton->setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 10px;");
     connect(applyButton, &QPushButton::clicked, this, &MainWindow::onApplyClicked);
     mainLayout->addWidget(applyButton);
@@ -148,42 +228,80 @@ void MainWindow::setupTrayIcon() {
     connect(quitAction, &QAction::triggered, qApp, &QApplication::quit);
 }
 
+// === ОБРАБОТЧИКИ СЛАЙДЕРОВ ===
 void MainWindow::onThrottleChanged(int value) {
-    throttleSpeed = value * 0.01f;
-    throttleValue->setText(QString("Скорость: %1").arg(throttleSpeed, 0, 'f', 2));
+    throttleValue->setText(QString("Время разгона: %1 мс").arg(value));
 }
-
 void MainWindow::onBrakeChanged(int value) {
-    brakeSpeed = value * 0.01f;
-    brakeValue->setText(QString("Скорость: %1").arg(brakeSpeed, 0, 'f', 2));
+    brakeValue->setText(QString("Время разгона: %1 мс").arg(value));
 }
-
 void MainWindow::onSteerChanged(int value) {
-    steerSpeed = value * 0.01f;
-    steerValue->setText(QString("Скорость: %1").arg(steerSpeed, 0, 'f', 2));
+    steerValue->setText(QString("Время поворота: %1 мс").arg(value));
 }
-
 void MainWindow::onSteerReturnChanged(int value) {
-    steerReturnSpeed = value * 0.01f;
-    steerReturnValue->setText(QString("Возврат: %1").arg(steerReturnSpeed, 0, 'f', 2));
+    steerReturnValue->setText(QString("Время возврата: %1 мс").arg(value));
 }
 
 void MainWindow::onProfileChanged(const QString &profile) {
     currentProfile = profile;
 }
 
+// === СОХРАНЕНИЕ И ЗАГРУЗКА ПРОФИЛЕЙ ===
+void MainWindow::loadProfile(const QString& profileName) {
+    QSettings settings("GPL_Pedals", "Profiles");
+    settings.beginGroup(profileName);
+
+    throttleSlider->setValue(settings.value("throttle", 30).toInt());
+    brakeSlider->setValue(settings.value("brake", 40).toInt());
+    steerSlider->setValue(settings.value("steer", 60).toInt());
+    steerReturnSlider->setValue(settings.value("steerReturn", 40).toInt());
+
+    keyGas = settings.value("keyGas", VK_MULTIPLY).toInt();
+    keyBrake = settings.value("keyBrake", VK_F5).toInt();
+    keyLeft = settings.value("keyLeft", VK_DIVIDE).toInt();
+    keyRight = settings.value("keyRight", VK_SUBTRACT).toInt();
+    settings.endGroup();
+
+    updateKeyLabels();
+}
+
+void MainWindow::saveProfile(const QString& profileName) {
+    QSettings settings("GPL_Pedals", "Profiles");
+    settings.beginGroup(profileName);
+
+    settings.setValue("throttle", throttleSlider->value());
+    settings.setValue("brake", brakeSlider->value());
+    settings.setValue("steer", steerSlider->value());
+    settings.setValue("steerReturn", steerReturnSlider->value());
+    settings.setValue("keyGas", keyGas);
+    settings.setValue("keyBrake", keyBrake);
+    settings.setValue("keyLeft", keyLeft);
+    settings.setValue("keyRight", keyRight);
+    settings.endGroup();
+
+    settings.setValue("lastProfile", profileName);
+}
+
+void MainWindow::loadStartupSettings() {
+    QSettings settings("GPL_Pedals", "Profiles");
+    QString lastProfile = settings.value("lastProfile", "Default").toString();
+    profileCombo->setCurrentText(lastProfile);
+    loadProfile(lastProfile);
+}
+
 void MainWindow::onSaveProfileClicked() {
-    saveSettings();
-    QMessageBox::information(this, "Сохранено", QString("Профиль '%1' сохранён").arg(currentProfile));
+    saveProfile(profileCombo->currentText());
+    QMessageBox::information(this, "Сохранено", QString("Профиль '%1' успешно сохранён!").arg(profileCombo->currentText()));
 }
 
 void MainWindow::onLoadProfileClicked() {
-    loadSettings();
-    QMessageBox::information(this, "Загружено", QString("Профиль '%1' загружен").arg(currentProfile));
+    loadProfile(profileCombo->currentText());
+    QMessageBox::information(this, "Загружено", QString("Профиль '%1' успешно загружен!").arg(profileCombo->currentText()));
 }
 
 void MainWindow::onApplyClicked() {
-    QMessageBox::information(this, "Применено", "Настройки применены!");
+    saveProfile(profileCombo->currentText());
+    QMessageBox::information(this, "Применено", "Настройки сохранены и применены!");
 }
 
 void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
@@ -197,35 +315,16 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
     }
 }
 
-void MainWindow::loadSettings() {
-    QSettings settings("GPL_Pedals", "GPL_Pedals_GUI");
-    throttleSlider->setValue(settings.value("throttle", 3).toInt());
-    brakeSlider->setValue(settings.value("brake", 5).toInt());
-    steerSlider->setValue(settings.value("steer", 8).toInt());
-    steerReturnSlider->setValue(settings.value("steerReturn", 10).toInt());
-    profileCombo->setCurrentText(settings.value("profile", "Default").toString());
-}
-
-void MainWindow::saveSettings() {
-    QSettings settings("GPL_Pedals", "GPL_Pedals_GUI");
-    settings.setValue("throttle", throttleSlider->value());
-    settings.setValue("brake", brakeSlider->value());
-    settings.setValue("steer", steerSlider->value());
-    settings.setValue("steerReturn", steerReturnSlider->value());
-    settings.setValue("profile", currentProfile);
-}
-
+// === ЛОГИКА VJOY ===
 void MainWindow::initVJoy() {
     if (!vJoyEnabled()) {
-        QMessageBox::critical(this, "Ошибка", "vJoy не установлен или не запущен!");
+        QMessageBox::critical(this, "Ошибка", "vJoy не установлен или не запущен!\nУстановите vJoy и перезагрузите ПК.");
         return;
     }
-
     if (!AcquireVJD(vJoyId)) {
-        QMessageBox::critical(this, "Ошибка", "Не удалось захватить vJoy Device!");
+        QMessageBox::critical(this, "Ошибка", "Не удалось захватить vJoy Device 1!\nЗакройте другие программы (JoyToKey, reWASD) или перезагрузите ПК.");
         return;
     }
-
     ResetVJD(vJoyId);
     vJoyInitialized = true;
 }
@@ -239,43 +338,45 @@ void MainWindow::cleanupVJoy() {
 void MainWindow::updateVJoy() {
     if (!vJoyInitialized) return;
 
-    bool gasPressed = (GetAsyncKeyState(KEY_GAS) & 0x8000) != 0;
-    bool brakePressed = (GetAsyncKeyState(KEY_BRAKE) & 0x8000) != 0;
-    bool leftPressed = (GetAsyncKeyState(KEY_LEFT) & 0x8000) != 0;
-    bool rightPressed = (GetAsyncKeyState(KEY_RIGHT) & 0x8000) != 0;
+    bool gasPressed = (GetAsyncKeyState(keyGas) & 0x8000) != 0;
+    bool brakePressed = (GetAsyncKeyState(keyBrake) & 0x8000) != 0;
+    bool leftPressed = (GetAsyncKeyState(keyLeft) & 0x8000) != 0;
+    bool rightPressed = (GetAsyncKeyState(keyRight) & 0x8000) != 0;
 
-    // Газ
+    // Расчёт приращения на основе времени (мс)
+    float throttleInc = 1.0f / (throttleSlider->value() / 10.0f);
+    float brakeInc = 1.0f / (brakeSlider->value() / 10.0f);
+    float steerInc = 1.0f / (steerSlider->value() / 10.0f);
+    float steerRetInc = 1.0f / (steerReturnSlider->value() / 10.0f);
+
     if (gasPressed) {
-        throttle = qMin(1.0f, throttle + throttleSpeed);
+        throttle = qMin(1.0f, throttle + throttleInc);
     } else {
-        throttle = qMax(0.0f, throttle - throttleSpeed * 2);
+        throttle = qMax(0.0f, throttle - throttleInc * 1.5f);
     }
 
-    // Тормоз
     if (brakePressed) {
-        brake = qMin(1.0f, brake + brakeSpeed);
+        brake = qMin(1.0f, brake + brakeInc);
     } else {
-        brake = qMax(0.0f, brake - brakeSpeed * 2);
+        brake = qMax(0.0f, brake - brakeInc * 1.5f);
     }
 
-    // Руль
     if (leftPressed && !rightPressed) {
-        steer = qMax(-1.0f, steer - steerSpeed);
+        steer = qMax(-1.0f, steer - steerInc);
     } else if (rightPressed && !leftPressed) {
-        steer = qMin(1.0f, steer + steerSpeed);
+        steer = qMin(1.0f, steer + steerInc);
     } else {
-        if (steer > 0) steer = qMax(0.0f, steer - steerReturnSpeed);
-        else if (steer < 0) steer = qMin(0.0f, steer + steerReturnSpeed);
+        if (steer > 0) steer = qMax(0.0f, steer - steerRetInc);
+        else if (steer < 0) steer = qMin(0.0f, steer + steerRetInc);
     }
 
-    // Отправляем в vJoy
-    LONG throttleValue = static_cast<LONG>(throttle * 32768.0f);
-    LONG brakeValue = static_cast<LONG>(brake * 32768.0f);
-    LONG steerValue = static_cast<LONG>(1 + (steer + 1.0f) * 0.5f * 32767.0f);
+    LONG tVal = static_cast<LONG>(throttle * 32768.0f);
+    LONG bVal = static_cast<LONG>(brake * 32768.0f);
+    LONG sVal = static_cast<LONG>(1 + (steer + 1.0f) * 0.5f * 32767.0f);
 
-    SetAxis(throttleValue, vJoyId, HID_USAGE_Y);
-    SetAxis(brakeValue, vJoyId, HID_USAGE_Z);
-    SetAxis(steerValue, vJoyId, HID_USAGE_X);
+    SetAxis(tVal, vJoyId, HID_USAGE_Y);
+    SetAxis(bVal, vJoyId, HID_USAGE_Z);
+    SetAxis(sVal, vJoyId, HID_USAGE_X);
 }
 
 void MainWindow::closeEvent(QCloseEvent *event) {

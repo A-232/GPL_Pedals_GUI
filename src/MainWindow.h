@@ -11,13 +11,22 @@
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QAction>
+#include <QKeyEvent>
+#include <QCloseEvent>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
     explicit MainWindow(QWidget *parent = nullptr);
-    ~MainWindow();
+    ~MainWindow() override;
+
+protected:
+    // Перехват нажатия клавиш для их переназначения
+    void keyPressEvent(QKeyEvent *event) override;
+
+    // Перехват событие закрытия окна (сворачивание в трей)
+    void closeEvent(QCloseEvent *event) override;
 
 private slots:
     void onThrottleChanged(int value);
@@ -29,18 +38,28 @@ private slots:
     void onLoadProfileClicked();
     void onApplyClicked();
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
-    void updateVJoy();
 
-protected:
-    void closeEvent(QCloseEvent *event) override;
+    // Слоты для кнопок переназначения
+    void onSetGasKeyClicked();
+    void onSetBrakeKeyClicked();
+    void onSetLeftKeyClicked();
+    void onSetRightKeyClicked();
+
+    void updateVJoy();
 
 private:
     void setupUI();
     void setupTrayIcon();
-    void loadSettings();
-    void saveSettings();
+
+    // === ОБЪЯВЛЕНИЯ НОВЫХ ФУНКЦИЙ для версии 1.1 ===
+    void loadStartupSettings();
+    void loadProfile(const QString& profileName);
+    void saveProfile(const QString& profileName);
+    // ============================================
+
     void initVJoy();
     void cleanupVJoy();
+    void updateKeyLabels(); // Обновляет текст на кнопках клавиш
 
     // UI элементы
     QSlider *throttleSlider;
@@ -56,6 +75,12 @@ private:
     QPushButton *loadButton;
     QPushButton *applyButton;
 
+    // Кнопки для переназначения клавиш
+    QPushButton *btnSetGas;
+    QPushButton *btnSetBrake;
+    QPushButton *btnSetLeft;
+    QPushButton *btnSetRight;
+
     // Системный трей
     QSystemTrayIcon *trayIcon;
     QMenu *trayMenu;
@@ -63,11 +88,15 @@ private:
     // Таймер для обновления vJoy
     QTimer *updateTimer;
 
-    // Настройки
-    float throttleSpeed;
-    float brakeSpeed;
-    float steerSpeed;
-    float steerReturnSpeed;
+    // Состояние переназначения клавиш
+    QString waitingForKey; // "Gas", "Brake", "Left", "Right" или ""
+
+    // Настройки (виртуальные коды Windows)
+    int keyGas;
+    int keyBrake;
+    int keyLeft;
+    int keyRight;
+
     QString currentProfile;
 
     // vJoy
